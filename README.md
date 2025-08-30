@@ -56,7 +56,7 @@
 ## 📐 Data & Rules
 
 * **Days:** `Mon Tue Wed Thu Fri Sat Sun` (also accepts full names like “Monday”)
-* **Time format:** `"HH:MM"` 24-hour (e.g., `14:30`)
+* **Time format:** `"HH:MM"` 24-hour **or** `"H:MM AM/PM"` (e.g., `14:30`, `2:30 PM`, `12:05 am`)
 * **Availability:** must satisfy `start < end`; exact duplicates blocked
 * **Courses:** duplicates blocked per user
 * **Suggestions:** require shared course **and** ≥ 30-minute overlap
@@ -118,7 +118,7 @@ classDiagram
 ## 🛠️ Troubleshooting
 
 * **“username already exists”** → pick another (by design)
-* **Invalid day/time** → use `Mon..Sun` and `HH:MM` 24-hour
+* **Invalid day/time** → Day: `Mon..Sun` (or full names). Time: `HH:MM` 24-hour **or** `H:MM AM/PM` (e.g., `5:30 PM`)
 * **No matches** → ensure **shared course** + **≥ 30-min** overlap
 * **Confirm fails** → likely overlaps with an existing **Confirmed** session
 

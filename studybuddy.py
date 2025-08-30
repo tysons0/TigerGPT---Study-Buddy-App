@@ -5,6 +5,7 @@
 
 import os
 import sqlite3
+import re
 from typing import List, Tuple, Optional
 
 DB_PATH = "studybuddy.db"
@@ -58,26 +59,56 @@ CREATE INDEX IF NOT EXISTS idx_session_invitee ON session(invitee_username, stat
 # --------------------------- Utilities (time & input) ---------------------------
 
 def normalize_day(day_raw: str) -> Optional[str]:
+    """Return canonical 'Mon'..'Sun' for inputs like 'Tue', 'Tuesday', 'thurs', etc."""
     s = (day_raw or "").strip().lower()
-    # accept "monday" or "mon"
-    for d in DAYS:
-        if s == d.lower() or s == d.lower() + "day":
-            return d
-    return None
+    aliases = {
+        "mon": "Mon", "monday": "Mon",
+        "tue": "Tue", "tues": "Tue", "tuesday": "Tue",
+        "wed": "Wed", "weds": "Wed", "wednesday": "Wed",
+        "thu": "Thu", "thur": "Thu", "thurs": "Thu", "thursday": "Thu",
+        "fri": "Fri", "friday": "Fri",
+        "sat": "Sat", "saturday": "Sat",
+        "sun": "Sun", "sunday": "Sun",
+    }
+    return aliases.get(s)
+
 
 def parse_time_hhmm(t: str) -> Optional[Tuple[int, int]]:
-    """Return (hour, minute) if 'HH:MM' valid, else None."""
-    try:
-        parts = t.strip().split(":")
-        if len(parts) != 2:
+    """
+    Accepts either:
+      - 24h: 'HH:MM'  (e.g., '17:30')
+      - 12h: 'H:MM AM/PM' (e.g., '5:30 PM', '11:05 am', '12:00AM', '12:00 pm')
+    Returns (hour, minute) in 24-hour form, or None if invalid.
+    """
+    if not t:
+        return None
+    s = t.strip().lower()
+
+    # Try 12-hour with am/pm first
+    m = re.fullmatch(r"(\\d{1,2})\\s*:\\s*(\\d{2})\\s*([ap])\\.?\\s*m\\.?", s)
+    if m:
+        h = int(m.group(1))
+        mnt = int(m.group(2))
+        ap = m.group(3)  # 'a' or 'p'
+        if not (1 <= h <= 12 and 0 <= mnt <= 59):
             return None
-        h = int(parts[0])
-        m = int(parts[1])
-        if 0 <= h <= 23 and 0 <= m <= 59:
-            return (h, m)
+        # Convert to 24h
+        if ap == "p" and h != 12:
+            h += 12
+        if ap == "a" and h == 12:
+            h = 0
+        return (h, mnt)
+
+    # Fallback: strict 24-hour HH:MM
+    m = re.fullmatch(r"(\\d{1,2})\\s*:\\s*(\\d{2})", s)
+    if not m:
         return None
-    except Exception:
-        return None
+    h = int(m.group(1))
+    mnt = int(m.group(2))
+    if 0 <= h <= 23 and 0 <= mnt <= 59:
+        return (h, mnt)
+    return None
+
 
 def to_minutes(hhmm: str) -> Optional[int]:
     p = parse_time_hhmm(hhmm)
@@ -173,7 +204,7 @@ class StudyBuddySystem:
         s = to_minutes(start)
         e = to_minutes(end)
         if s is None or e is None:
-            print('Error: time must be "HH:MM" (24-hour).')
+            print('Error: time must be "HH:MM" (24-hour) or "H:MM AM/PM".')
             return False
         if s >= e:
             print("Error: start must be earlier than end. (AC-2)")
