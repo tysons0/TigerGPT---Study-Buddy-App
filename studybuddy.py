@@ -1,8 +1,3 @@
-# studybuddy.py
-# Minimal menu-based Study Buddy app (SQLite)
-# Implements SRS features only: profiles/courses, availability, search, suggestions,
-# propose/confirm sessions, list sessions. No extras.
-
 import os
 import sqlite3
 import re
@@ -72,43 +67,40 @@ def normalize_day(day_raw: str) -> Optional[str]:
     }
     return aliases.get(s)
 
-
 def parse_time_hhmm(t: str) -> Optional[Tuple[int, int]]:
     """
     Accepts either:
       - 24h: 'HH:MM'  (e.g., '17:30')
-      - 12h: 'H:MM AM/PM' (e.g., '5:30 PM', '11:05 am', '12:00AM', '12:00 pm')
+      - 12h: 'H:MM AM/PM' or 'H:MMAM/PM' (e.g., '5:30 PM', '12:30PM', '11:05 am', '12:00AM')
     Returns (hour, minute) in 24-hour form, or None if invalid.
     """
     if not t:
         return None
-    s = t.strip().lower()
+    s = t.strip().upper().replace(".", "")   # normalize 'p.m.' -> 'PM'
 
-    # Try 12-hour with am/pm first
-    m = re.fullmatch(r"(\\d{1,2})\\s*:\\s*(\\d{2})\\s*([ap])\\.?\\s*m\\.?", s)
-    if m:
-        h = int(m.group(1))
-        mnt = int(m.group(2))
-        ap = m.group(3)  # 'a' or 'p'
-        if not (1 <= h <= 12 and 0 <= mnt <= 59):
-            return None
-        # Convert to 24h
-        if ap == "p" and h != 12:
-            h += 12
-        if ap == "a" and h == 12:
-            h = 0
-        return (h, mnt)
-
-    # Fallback: strict 24-hour HH:MM
-    m = re.fullmatch(r"(\\d{1,2})\\s*:\\s*(\\d{2})", s)
+    # Match HH:MM with optional AM/PM (space optional)
+    m = re.fullmatch(r"(\d{1,2})\s*:\s*(\d{2})\s*(AM|PM)?", s)
     if not m:
         return None
+
     h = int(m.group(1))
     mnt = int(m.group(2))
-    if 0 <= h <= 23 and 0 <= mnt <= 59:
-        return (h, mnt)
-    return None
+    suf = m.group(3)  # None, 'AM' or 'PM'
+    if not (0 <= mnt <= 59):
+        return None
 
+    if suf:  # 12-hour clock
+        if not (1 <= h <= 12):
+            return None
+        if suf == "PM" and h != 12:
+            h += 12
+        if suf == "AM" and h == 12:
+            h = 0
+    else:    # 24-hour clock
+        if not (0 <= h <= 23):
+            return None
+
+    return (h, mnt)
 
 def to_minutes(hhmm: str) -> Optional[int]:
     p = parse_time_hhmm(hhmm)
@@ -116,6 +108,15 @@ def to_minutes(hhmm: str) -> Optional[int]:
         return None
     h, m = p
     return h * 60 + m
+
+def minutes_to_ampm(total_min: int) -> str:
+    """Convert minutes-from-midnight to 'H:MM AM/PM'."""
+    h24 = (total_min // 60) % 24
+    m = total_min % 60
+    suffix = "AM" if h24 < 12 else "PM"
+    h12 = 12 if (h24 % 12) == 0 else (h24 % 12)
+    return f"{h12}:{m:02d} {suffix}"
+
 
 def overlap_minutes(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
     """Return overlap duration in minutes between two [start,end) intervals."""
@@ -288,13 +289,13 @@ class StudyBuddySystem:
             if example is not None:
                 day, start_min, end_min = example
                 suggestions.append({
-                    "classmate_username": cname,
-                    "full_name": info["full_name"],
-                    "shared_courses": sorted(info["courses"]),
-                    "overlap_day": day,
-                    "overlap_start": f"{start_min//60:02d}:{start_min%60:02d}",
-                    "overlap_end": f"{end_min//60:02d}:{end_min%60:02d}",
-                })
+                "classmate_username": cname,
+                "full_name": info["full_name"],
+                "shared_courses": sorted(info["courses"]),
+                "overlap_day": day,
+                "overlap_start": minutes_to_ampm(start_min),
+                "overlap_end": minutes_to_ampm(end_min),
+})
         return suggestions
 
     def _availability_by_day(self, username: str):
@@ -580,8 +581,8 @@ class MenuUI:
                         print(f"#{r['id']} {r['day_of_week']} {r['start_time']}–{r['end_time']}")
             elif c == "2":
                 day = prompt("Day (Mon..Sun or full name): ")
-                start = prompt('Start time "HH:MM": ')
-                end = prompt('End time "HH:MM": ')
+                start = prompt("Start time (HH:MM 24h or H:MM AM/PM): ")
+                end = prompt("End time (HH:MM 24h or H:MM AM/PM): ")
                 self.sys.add_availability(self.active_user, day, start, end)
             elif c == "3":
                 sid = prompt("Availability id to remove: ")
@@ -620,9 +621,10 @@ class MenuUI:
         invitee = prompt("Invitee username: ")
         course = prompt("Shared course code: ")
         day = prompt("Day (Mon..Sun or full name): ")
-        start = prompt('Start time "HH:MM": ')
-        end = prompt('End time "HH:MM": ')
+        start = prompt("Start time (HH:MM 24h or H:MM AM/PM): ")
+        end = prompt("End time (HH:MM 24h or H:MM AM/PM): ")
         self.sys.propose_session(self.active_user, invitee, course, day, start, end)
+
 
     def confirm_sessions_flow(self):
         self._need_active()
@@ -634,7 +636,7 @@ class MenuUI:
         for r in rows:
             print(f"#{r['id']} from {r['initiator_username']} | {r['course_code']} "
                   f"| {r['day_of_week']} {r['start_time']}–{r['end_time']}")
-        sid = prompt("Enter session id to confirm (or blank to cancel): ")
+        sid = prompt("Enter the session ID from the list above to confirm (or press Enter to cancel): ")
         if sid and sid.isdigit():
             self.sys.confirm_session(int(sid), self.active_user)
 
