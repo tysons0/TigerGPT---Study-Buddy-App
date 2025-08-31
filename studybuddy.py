@@ -3,9 +3,13 @@ import sqlite3
 import re
 from typing import List, Tuple, Optional
 
+# SQLite file path for this app
 DB_PATH = "studybuddy.db"
+
+# List for days in a week
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
+# Database schema (run once on startup)
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 
@@ -50,11 +54,10 @@ CREATE INDEX IF NOT EXISTS idx_avail_user ON availability(username);
 CREATE INDEX IF NOT EXISTS idx_session_invitee ON session(invitee_username, status);
 """
 
-
-# --------------------------- Utilities (time & input) ---------------------------
+# time parsing functions and small helpers
 
 def normalize_day(day_raw: str) -> Optional[str]:
-    """Return canonical 'Mon'..'Sun' for inputs like 'Tue', 'Tuesday', 'thurs', etc."""
+    # Map many day spellings to "Mon".."Sun"
     s = (day_raw or "").strip().lower()
     aliases = {
         "mon": "Mon", "monday": "Mon",
@@ -69,78 +72,83 @@ def normalize_day(day_raw: str) -> Optional[str]:
 
 def parse_time_hhmm(t: str) -> Optional[Tuple[int, int]]:
     """
-    Accepts either:
-      - 24h: 'HH:MM'  (e.g., '17:30')
-      - 12h: 'H:MM AM/PM' or 'H:MMAM/PM' (e.g., '5:30 PM', '12:30PM', '11:05 am', '12:00AM')
-    Returns (hour, minute) in 24-hour form, or None if invalid.
+    Accepts:
+      - 24h: 'HH:MM'
+      - 12h: 'H:MM AM/PM' or 'H:MMAM/PM'
+    Returns (hour, minute) in 24h or None.
     """
     if not t:
         return None
-    s = t.strip().upper().replace(".", "")   # normalize 'p.m.' -> 'PM'
 
-    # Match HH:MM with optional AM/PM (space optional)
-    m = re.fullmatch(r"(\d{1,2})\s*:\s*(\d{2})\s*(AM|PM)?", s)
+    # Handle "p.m." / spaces / casing
+    s = t.strip().upper().replace(".", "")
+
+    # HH:MM with optional AM/PM, space optional
+    m = re.fullmatch(r"(\d{1,2})\s*:\s*(\d{2})\s*(AM|PM)?", s) #use regex to match user time input
     if not m:
         return None
 
-    h = int(m.group(1))
-    mnt = int(m.group(2))
-    suf = m.group(3)  # None, 'AM' or 'PM'
-    if not (0 <= mnt <= 59):
+    hour = int(m.group(1))
+    minute = int(m.group(2))
+    ampm = m.group(3)  # AM/PM or None
+
+    if not (0 <= minute <= 59):
         return None
 
-    if suf:  # 12-hour clock
-        if not (1 <= h <= 12):
+    if ampm:
+        if not (1 <= hour <= 12):
             return None
-        if suf == "PM" and h != 12:
-            h += 12
-        if suf == "AM" and h == 12:
-            h = 0
-    else:    # 24-hour clock
-        if not (0 <= h <= 23):
+        if ampm == "PM" and hour != 12:
+            hour += 12
+        if ampm == "AM" and hour == 12:
+            hour = 0
+    else:
+        if not (0 <= hour <= 23):
             return None
 
-    return (h, mnt)
+    return (hour, minute)
 
 def to_minutes(hhmm: str) -> Optional[int]:
-    p = parse_time_hhmm(hhmm)
-    if p is None:
+    # Convert time string to minutes since midnight
+    parsed = parse_time_hhmm(hhmm)
+    if parsed is None:
         return None
-    h, m = p
-    return h * 60 + m
+    hour, minute = parsed
+    return hour * 60 + minute
 
 def minutes_to_ampm(total_min: int) -> str:
-    """Convert minutes-from-midnight to 'H:MM AM/PM'."""
+    # Convert minutes since midnight to "H:MM AM/PM" for display
     h24 = (total_min // 60) % 24
     m = total_min % 60
     suffix = "AM" if h24 < 12 else "PM"
     h12 = 12 if (h24 % 12) == 0 else (h24 % 12)
     return f"{h12}:{m:02d} {suffix}"
 
-
 def overlap_minutes(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
-    """Return overlap duration in minutes between two [start,end) intervals."""
+    # Inclusive start, exclusive end overlap length
     start = max(a_start, b_start)
     end = min(a_end, b_end)
     return max(0, end - start)
 
 def interval_includes(inner_start: int, inner_end: int, outer_start: int, outer_end: int) -> bool:
-    """True if [inner_start, inner_end) lies fully inside [outer_start, outer_end)."""
+    # Check inner fully inside outer
     return outer_start <= inner_start and inner_end <= outer_end
 
 def prompt(msg: str) -> str:
+    # Simple input wrapper function
     return input(msg).strip()
 
-
-# --------------------------- Data Access Layer ---------------------------
+# Database functions
 
 def get_conn():
+    # New connection with row dicts and foreign key enforcement
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON;")
     return con
 
 def init_db():
+    # Create tables on first run
     first = not os.path.exists(DB_PATH)
     with get_conn() as con:
         con.executescript(SCHEMA_SQL)
@@ -148,19 +156,23 @@ def init_db():
         print(f"[init] Created {DB_PATH}")
 
 
-# --------------------------- Core System (SRS FR-1..FR-5) ---------------------------
 
 class StudyBuddySystem:
-    """Thin service layer that the menu calls. Keeps logic readable and testable."""
+    # Logic the menu calls
 
-    # ---------- FR-1 Profile & Courses ----------
+    # Profiles & courses
+
     def create_profile(self, username: str, full_name: str) -> bool:
+        # Insert a new student
         if not username or not full_name:
             print("Error: username and full name required.")
             return False
         try:
             with get_conn() as con:
-                con.execute("INSERT INTO student(username, full_name) VALUES(?, ?)", (username, full_name))
+                con.execute(
+                    "INSERT INTO student(username, full_name) VALUES(?, ?)",
+                    (username, full_name),
+                )
             print("Profile created.")
             return True
         except sqlite3.IntegrityError:
@@ -168,18 +180,25 @@ class StudyBuddySystem:
             return False
 
     def get_profile(self, username: str) -> Optional[sqlite3.Row]:
+        # Fetch a student row
         with get_conn() as con:
-            row = con.execute("SELECT * FROM student WHERE username = ?", (username,)).fetchone()
-        return row
+            return con.execute(
+                "SELECT * FROM student WHERE username = ?",
+                (username,),
+            ).fetchone()
 
     def add_course(self, username: str, course_code: str) -> bool:
+        # Add a course for a user (ensure no duplicates)
         course_code = course_code.strip()
         if not course_code:
             print("Error: course code required.")
             return False
         try:
             with get_conn() as con:
-                con.execute("INSERT INTO enrollment(username, course_code) VALUES(?, ?)", (username, course_code))
+                con.execute(
+                    "INSERT INTO enrollment(username, course_code) VALUES(?, ?)",
+                    (username, course_code),
+                )
             print("Course added.")
             return True
         except sqlite3.IntegrityError:
@@ -187,27 +206,37 @@ class StudyBuddySystem:
             return False
 
     def remove_course(self, username: str, course_code: str) -> None:
+        # Remove a course if present
         with get_conn() as con:
-            con.execute("DELETE FROM enrollment WHERE username = ? AND course_code = ?", (username, course_code))
+            con.execute(
+                "DELETE FROM enrollment WHERE username = ? AND course_code = ?",
+                (username, course_code),
+            )
         print("If present, course removed.")
 
     def list_courses(self, username: str) -> List[str]:
+        # List user's courses sorted
         with get_conn() as con:
-            rows = con.execute("SELECT course_code FROM enrollment WHERE username = ? ORDER BY course_code", (username,)).fetchall()
+            rows = con.execute(
+                "SELECT course_code FROM enrollment WHERE username = ? ORDER BY course_code",
+                (username,),
+            ).fetchall()
         return [r["course_code"] for r in rows]
 
-    # ---------- FR-2 Availability ----------
+    # Availability
+
     def add_availability(self, username: str, day: str, start: str, end: str) -> bool:
+        # Insert availability after validating inputs
         day_norm = normalize_day(day)
         if day_norm is None:
             print("Error: day must be one of Mon..Sun.")
             return False
-        s = to_minutes(start)
-        e = to_minutes(end)
-        if s is None or e is None:
+        start_min = to_minutes(start)
+        end_min = to_minutes(end)
+        if start_min is None or end_min is None:
             print('Error: time must be "HH:MM" (24-hour) or "H:MM AM/PM".')
             return False
-        if s >= e:
+        if start_min >= end_min:
             print("Error: start must be earlier than end. (AC-2)")
             return False
         try:
@@ -223,25 +252,33 @@ class StudyBuddySystem:
             return False
 
     def remove_availability(self, availability_id: int) -> None:
+        # Delete an availability row by id
         with get_conn() as con:
             con.execute("DELETE FROM availability WHERE id = ?", (availability_id,))
         print("If present, availability removed.")
 
     def list_availability(self, username: str) -> List[sqlite3.Row]:
+        # List availability in weekday order then by start time
         with get_conn() as con:
-            rows = con.execute(
-                "SELECT id, day_of_week, start_time, end_time FROM availability WHERE username = ? "
-                "ORDER BY CASE day_of_week "
-                "WHEN 'Mon' THEN 1 WHEN 'Tue' THEN 2 WHEN 'Wed' THEN 3 WHEN 'Thu' THEN 4 "
-                "WHEN 'Fri' THEN 5 WHEN 'Sat' THEN 6 WHEN 'Sun' THEN 7 END, start_time",
+            return con.execute(
+                """
+                SELECT id, day_of_week, start_time, end_time
+                FROM availability
+                WHERE username = ?
+                ORDER BY CASE day_of_week
+                  WHEN 'Mon' THEN 1 WHEN 'Tue' THEN 2 WHEN 'Wed' THEN 3 WHEN 'Thu' THEN 4
+                  WHEN 'Fri' THEN 5 WHEN 'Sat' THEN 6 WHEN 'Sun' THEN 7 END,
+                  start_time
+                """,
                 (username,),
             ).fetchall()
-        return rows
 
-    # ---------- FR-3 Search & Suggestions ----------
+    # Search & suggestions
+
     def find_classmates_by_course(self, username: str, course_code: str) -> List[sqlite3.Row]:
+        # Find other students in the same course
         with get_conn() as con:
-            rows = con.execute(
+            return con.execute(
                 """
                 SELECT s.username, s.full_name
                 FROM enrollment e
@@ -251,55 +288,53 @@ class StudyBuddySystem:
                 """,
                 (course_code, username),
             ).fetchall()
-        return rows
 
     def suggest_matches(self, username: str) -> List[dict]:
-        """Return list of {classmate_username, shared_courses, overlap_day, overlap_start, overlap_end}."""
+        # Suggest classmates with at least 30 min overlap
         my_courses = set(self.list_courses(username))
         if not my_courses:
             return []
 
-        # Find potential classmates across all my courses
+        placeholders = ",".join("?" * len(my_courses))
         with get_conn() as con:
             rows = con.execute(
-                """
+                f"""
                 SELECT DISTINCT s.username, s.full_name, e.course_code
                 FROM enrollment e
                 JOIN student s ON s.username = e.username
-                WHERE e.course_code IN ({})
+                WHERE e.course_code IN ({placeholders})
                   AND s.username <> ?
-                """.format(",".join("?" * len(my_courses))),
+                """,
                 (*sorted(my_courses), username),
             ).fetchall()
 
-        # Group classmates → shared courses
         classmates = {}
         for r in rows:
-            classmates.setdefault(r["username"], {"full_name": r["full_name"], "courses": set()})
+            classmates.setdefault(
+                r["username"], {"full_name": r["full_name"], "courses": set()}
+            )
             classmates[r["username"]]["courses"].add(r["course_code"])
 
-        # Load availability once
         my_avail = self._availability_by_day(username)
 
         suggestions = []
         for cname, info in classmates.items():
             c_avail = self._availability_by_day(cname)
-            # Check any overlap ≥ 30 minutes on any day
             example = self._first_overlap_example(my_avail, c_avail, min_minutes=30)
             if example is not None:
                 day, start_min, end_min = example
                 suggestions.append({
-                "classmate_username": cname,
-                "full_name": info["full_name"],
-                "shared_courses": sorted(info["courses"]),
-                "overlap_day": day,
-                "overlap_start": minutes_to_ampm(start_min),
-                "overlap_end": minutes_to_ampm(end_min),
-})
+                    "classmate_username": cname,
+                    "full_name": info["full_name"],
+                    "shared_courses": sorted(info["courses"]),
+                    "overlap_day": day,
+                    "overlap_start": minutes_to_ampm(start_min),
+                    "overlap_end": minutes_to_ampm(end_min),
+                })
         return suggestions
 
     def _availability_by_day(self, username: str):
-        """Map day -> list of (start_min, end_min)."""
+        # Build {day: [(start,end), ...]} in minutes
         daymap = {d: [] for d in DAYS}
         for row in self.list_availability(username):
             s = to_minutes(row["start_time"])
@@ -309,6 +344,7 @@ class StudyBuddySystem:
         return daymap
 
     def _first_overlap_example(self, mine, theirs, min_minutes=30):
+        # Return one overlap example (day, start, end) or None
         for d in DAYS:
             for (ms, me) in mine[d]:
                 for (ts, te) in theirs[d]:
@@ -319,44 +355,45 @@ class StudyBuddySystem:
                         return (d, start, end)
         return None
 
-    # ---------- FR-4 Sessions ----------
-    def propose_session(self, initiator: str, invitee: str, course_code: str,
-                        day: str, start: str, end: str) -> Optional[int]:
-        # Validate people and course sharing
+    # Sessions
+
+    def propose_session(
+        self, initiator: str, invitee: str, course_code: str, day: str, start: str, end: str
+    ) -> Optional[int]:
+        # Basic checks: users exist and share the course
         if not self.get_profile(initiator) or not self.get_profile(invitee):
             print("Error: both users must exist.")
             return None
         if course_code not in set(self.list_courses(initiator)):
             print("Error: initiator is not enrolled in that course.")
             return None
-        # Invitee must also be enrolled
-        invitee_courses = set(self.list_courses(invitee))
-        if course_code not in invitee_courses:
+        if course_code not in set(self.list_courses(invitee)):
             print("Error: invitee is not enrolled in that course.")
             return None
 
+        # Validate day and times
         day_norm = normalize_day(day)
         if day_norm is None:
             print("Error: day must be one of Mon..Sun.")
             return None
-        smin, emin = to_minutes(start), to_minutes(end)
-        if smin is None or emin is None or smin >= emin:
+        start_min = to_minutes(start)
+        end_min = to_minutes(end)
+        if start_min is None or end_min is None or start_min >= end_min:
             print("Error: invalid start/end times. (AC-5)")
             return None
-
-        # Check requested window lies within any overlap ≥30m of both users
-        my_avail = self._availability_by_day(initiator)
-        their_avail = self._availability_by_day(invitee)
-        requested_len = emin - smin
-        if requested_len < 30:
+        if (end_min - start_min) < 30:
             print("Error: proposed session must be at least 30 minutes.")
             return None
+
+        # Make sure the requested window fits inside some overlap
+        my_avail = self._availability_by_day(initiator)
+        their_avail = self._availability_by_day(invitee)
 
         ok = False
         for (ms, me) in my_avail[day_norm]:
             for (ts, te) in their_avail[day_norm]:
                 ov = overlap_minutes(ms, me, ts, te)
-                if ov >= 30 and interval_includes(smin, emin, max(ms, ts), min(me, te)):
+                if ov >= 30 and interval_includes(start_min, end_min, max(ms, ts), min(me, te)):
                     ok = True
                     break
             if ok:
@@ -365,6 +402,7 @@ class StudyBuddySystem:
             print("Error: proposal outside overlapping availability. (FR-4.2 / AC-5)")
             return None
 
+        # Save proposal
         with get_conn() as con:
             cur = con.execute(
                 """
@@ -379,8 +417,9 @@ class StudyBuddySystem:
         return session_id
 
     def list_sessions_for(self, username: str) -> List[sqlite3.Row]:
+        # All sessions where user is initiator or invitee
         with get_conn() as con:
-            rows = con.execute(
+            return con.execute(
                 """
                 SELECT id, course_code, initiator_username, invitee_username,
                        day_of_week, start_time, end_time, status
@@ -390,11 +429,11 @@ class StudyBuddySystem:
                 """,
                 (username, username),
             ).fetchall()
-        return rows
 
     def list_proposed_for_invitee(self, invitee: str) -> List[sqlite3.Row]:
+        # Pending proposals for a user
         with get_conn() as con:
-            rows = con.execute(
+            return con.execute(
                 """
                 SELECT id, course_code, initiator_username, day_of_week, start_time, end_time
                 FROM session
@@ -403,13 +442,11 @@ class StudyBuddySystem:
                 """,
                 (invitee,),
             ).fetchall()
-        return rows
 
     def confirm_session(self, session_id: int, invitee: str) -> bool:
+        # Invitee confirms if no conflict with other confirmed sessions
         with get_conn() as con:
-            sess = con.execute(
-                "SELECT * FROM session WHERE id = ?", (session_id,)
-            ).fetchone()
+            sess = con.execute("SELECT * FROM session WHERE id = ?", (session_id,)).fetchone()
             if not sess:
                 print("Error: session not found.")
                 return False
@@ -420,7 +457,7 @@ class StudyBuddySystem:
                 print("Info: session already confirmed.")
                 return True
 
-            # Check conflicts with invitee's confirmed sessions (same day overlap)
+            # Check for overlap on same day with other confirmed sessions
             rows = con.execute(
                 """
                 SELECT day_of_week, start_time, end_time
@@ -446,7 +483,6 @@ class StudyBuddySystem:
             return True
 
 
-# --------------------------- Menu UI (SRS §7) ---------------------------
 
 class MenuUI:
     def __init__(self, system: StudyBuddySystem):
@@ -454,6 +490,7 @@ class MenuUI:
         self.active_user: Optional[str] = None
 
     def run(self):
+        # Main loop
         self._ensure_active_user_on_start()
         while True:
             print("\n=== Main Menu ===")
@@ -496,6 +533,7 @@ class MenuUI:
                 print("Invalid choice.")
 
     def _ensure_active_user_on_start(self):
+        # Ask for user or create one
         print("Welcome to Study Buddy (Menu).")
         while not self.active_user:
             u = prompt("Enter username (or leave blank to create a new one): ")
@@ -514,7 +552,7 @@ class MenuUI:
             else:
                 print("You need an active user to continue.")
 
-    # ----- Flows -----
+    # Menu functions
 
     def switch_user(self):
         u = prompt("Username to switch to: ")
@@ -625,7 +663,6 @@ class MenuUI:
         end = prompt("End time (HH:MM 24h or H:MM AM/PM): ")
         self.sys.propose_session(self.active_user, invitee, course, day, start, end)
 
-
     def confirm_sessions_flow(self):
         self._need_active()
         rows = self.sys.list_proposed_for_invitee(self.active_user)
@@ -652,12 +689,11 @@ class MenuUI:
                   f"{r['initiator_username']} -> {r['invitee_username']}")
 
     def _need_active(self):
+        # Guard for flows that require a user
         if not self.active_user:
             raise RuntimeError("Active user required. (should not happen after start)")
-        # no return value; used just as a guard
 
-
-# --------------------------- Entry Point ---------------------------
+# entry point
 
 def main():
     init_db()
