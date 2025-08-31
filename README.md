@@ -31,7 +31,7 @@
 3. **Run**:
 
    ```bash
-   python studybuddy.py
+   python3 studybuddy.py
    ```
 
 
